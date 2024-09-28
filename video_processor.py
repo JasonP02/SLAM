@@ -23,6 +23,8 @@ class VideoProcessor:
         self.points_3d_global = None
         self.std = 0
         self.mean = 0
+        self.pts_inliers1 = None
+        self.pts_inlier2 = None
         self.frame = None
         self.frame_count = 0
         self.R_total = np.eye(3)
@@ -125,6 +127,8 @@ class VideoProcessor:
 
 
     def bundle_adjustment(self):
+
+        # Firstly we need to project our 3d points back to 2d for error calculations
         rvec, _ = cv2.Rodrigues(self.R_total)
         tvec = self.t_total.flatten()
         points_reprojected, J = cv2.projectPoints(
@@ -134,8 +138,8 @@ class VideoProcessor:
             cameraMatrix=self.K,
             distCoeffs=None)
         
-        r = self.points_3d_global - points_reprojected
+        r = self.pts - points_reprojected
         l2_error = r**2
-        lam = 1e-5
+        lam = 1e-3
 
         (J.T @ J + lam * np.eye(J.shape)) * lam = -J.T @ l2_error
