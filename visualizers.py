@@ -3,6 +3,7 @@
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from utils import filter_outliers
 
 class Visualizer:
     """Handles visualization of features, optical flow, and 3D point cloud."""
@@ -35,6 +36,9 @@ class Visualizer:
         if points_3d.size == 0:
             print("No 3D points to display.")
             return
+
+        # Filter out outliers
+        points_3d = filter_outliers(points_3d)
 
         fig = plt.figure(figsize=(10, 7))
         ax = fig.add_subplot(111, projection='3d')
