@@ -16,6 +16,9 @@ class BundleAdjuster:
         self.P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
 
     def update(self, pts1, pts2):
+        '''
+        For each frame we perform this update
+        '''
         E, _ = cv2.findEssentialMat(pts1, pts2, self.K)
         _, R, t, _ = cv2.recoverPose(E, pts1, pts2, self.K)
 
@@ -35,23 +38,37 @@ class BundleAdjuster:
         self.points_3d_global = (self.R_total @ points_3d.T).T + self.t_total.T
 
     def optimize(self):
+        '''
+        Optimize for every nth frame (tbd)
+        !! Note that the update of R,t_total is probably incorrect
+        '''
         optimized_R, optimized_t = self.bundle_adjustment()
         self.R_total = optimized_R
         self.t_total = optimized_t
 
     def project_points(self, R, t):
+        '''
+        We project our 3d points back to 2d coordinates when we perform optimization
+        It is unclear to me if we should project all 3d points to 2d, or just from the curretn frame
+        '''
         points_3d_hom = np.hstack((self.points_3d_global, np.ones((self.points_3d_global.shape[0], 1))))
         points_2d_hom = self.K @ (R @ points_3d_hom.T + t)
         points_2d = points_2d_hom[:2] / points_2d_hom[2]
         return points_2d.T
 
     def reprojection_error(self, params, points_2d):
+        '''
+        Error calculation for optimizer
+        '''
         R = cv2.Rodrigues(params[:3])[0]
         t = params[3:6].reshape(3, 1)
         points_proj = self.project_points(R, t)
         return (points_2d - points_proj).ravel()
 
     def bundle_adjustment(self):
+        '''
+        Scipy nonlinear least squares optimizer; increases accuracy of R and t
+        '''
         initial_params = np.concatenate([cv2.Rodrigues(self.R_total)[0].ravel(), self.t_total.ravel()])
         result = least_squares(self.reprojection_error, initial_params, args=(self.project_points(self.R_total, self.t_total),))
         
@@ -61,4 +78,7 @@ class BundleAdjuster:
         return R_opt, t_opt
 
     def get_global_points(self):
+        '''
+        Good practice to make this its own method
+        '''
         return self.points_3d_global
