@@ -16,7 +16,7 @@ def main():
 
     try:
         # Process the video and retrieve the global 3D map
-        global_map = processor.process_video()
+        global_map = processor.process_video(video_path)
     except IOError as e:
         print(e)
         return
