@@ -4,23 +4,14 @@ from video_processor import VideoProcessor
 from visualizers import Visualizer
 import os
 
-def display_3d_map(points_3d):
-    """Visualize the accumulated 3D points."""
-    Visualizer.visualize_3d_map(points_3d)
 
 def main():
-    # Specify the correct path to your video file
-    # Use raw strings (prefix with 'r') or double backslashes '\\' in Windows paths
     video_path = r"C:\Users\jason\Dropbox\Python\SLAM\videos\robo-vid.MP4"
-    # Alternatively, use forward slashes '/'
-    # video_path = "C:/Users/jason/Dropbox/Python/SLAM/videos/robo-vid.MP4"
-
-    # Verify that the video file exists
+    
     if not os.path.isfile(video_path):
         print(f"Error: Video file does not exist at the specified path: {video_path}")
         return
-
-    # Create an instance of VideoProcessor
+    
     processor = VideoProcessor(video_path)
 
     try:
@@ -38,7 +29,7 @@ def main():
 
     # Display the 3D map
     if global_map.size > 0:
-        display_3d_map(global_map)
+        Visualizer.visualize_3d_map(global_map)
     else:
         print("No 3D points were generated.")
 

@@ -8,22 +8,10 @@ from utils import filter_outliers
 class Visualizer:
     """Handles visualization of features, optical flow, and 3D point cloud."""
     @staticmethod
-    def draw_features(frame, features, color=(0, 255, 0), radius=3):
-        for x, y in features:
-            cv2.circle(frame, (int(x), int(y)), radius, color, -1)
-        return frame
-
-    @staticmethod
-    def draw_flow(frame, prev_features, current_features, color=(0, 0, 255)):
-        for (x_prev, y_prev), (x_curr, y_curr) in zip(prev_features, current_features):
-            cv2.arrowedLine(
-                frame,
-                (int(x_prev), int(y_prev)),
-                (int(x_curr), int(y_curr)),
-                color=color,
-                thickness=1,
-                tipLength=0.03
-            )
+    def draw_features(frame, keypoints, color=(0, 255, 0), radius=3):
+        for kp in keypoints:
+            x, y = map(int, kp.pt)
+            cv2.circle(frame, (x, y), radius, color, -1)
         return frame
 
     @staticmethod

@@ -3,8 +3,6 @@
 import cv2
 import numpy as np
 from config import CAMERA_INTRINSICS
-from extractors import ShiTomasiExtractor
-from trackers import FeatureTracker
 from visualizers import Visualizer
 from scipy.optimize import least_squares
 
@@ -12,51 +10,47 @@ class VideoProcessor:
     """Processes the video to extract, track features, and build a 3D map."""
     def __init__(self, filepath):
         self.filepath = filepath
-        self.extractor = ShiTomasiExtractor(**{
-            'maxCorners': 300,
-            'qualityLevel': 0.02,
-            'minDistance': 10
-        })
-        self.tracker = FeatureTracker()
         self.visualizer = Visualizer()
+
+        self.features = {"Keypoints": [], "Descriptors": []}
+
         self.global_map = []
         self.points_3d_global = None
-        self.std = 0
-        self.mean = 0
+
         self.pts_inliers1 = None
         self.pts_inlier2 = None
+
+        self.orb = cv2.ORB_create()
+
         self.frame = None
         self.frame_count = 0
+
         self.R_total = np.eye(3)
         self.R = None
         self.t_total = np.zeros((3, 1))
         self.t = None
-        self.P1 = None
         self.K = np.array([
             [CAMERA_INTRINSICS['fx'], 0, CAMERA_INTRINSICS['cx']],
             [0, CAMERA_INTRINSICS['fy'], CAMERA_INTRINSICS['cy']],
             [0, 0, 1]
         ])
-        self.pts1_inliers = None
-        self.pts2_inliers = None
-
 
 
     def process_video(self):
         cap = cv2.VideoCapture(self.filepath)
         if not cap.isOpened():
             raise IOError(f"Cannot open video file: {self.filepath}")
+        
         try:
             while True:
                 ret, self.frame = cap.read()
-                
-                self.update_global_map() # The good stuff is here
-                
                 if not ret:
                     print("End of video or cannot read the frame.")
                     break
 
-                # Display the processed frame
+                self.update_global_map()
+                self.frame_count += 1
+
                 if self.visualizer.display_frame(self.frame) == ord('q'):
                     print("Processing stopped by user.")
                     break
@@ -64,119 +58,93 @@ class VideoProcessor:
             cap.release()
             cv2.destroyAllWindows()
             print(f"Total frames processed: {self.frame_count}")
+        
         return np.vstack(self.global_map) if self.global_map else np.array([])
 
+    def match_features(self, desc1, desc2):
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = bf.match(desc1, desc2)
+        matches = sorted(matches, key=lambda x: x.distance)
+        return matches[:50]  # Return top 50 matches
 
+    def get_kp_and_desc(self):
+        gray_frame = cv2.cvtColor(self.frame, cv2.COLOR_BGR2GRAY)
+        features = cv2.goodFeaturesToTrack(gray_frame, 1000, 0.01, 10)
+        
+        if features is None:
+            return [], None
+
+        keypoints = [cv2.KeyPoint(x=f[0][0], y=f[0][1], size=10) for f in features]
+        keypoints, descriptors = self.orb.compute(self.frame, keypoints)
+        
+        self.features["Keypoints"].append(keypoints)
+        self.features["Descriptors"].append(descriptors)
+        return keypoints, descriptors
 
     def update_global_map(self):
         if self.frame_count == 0:
-            # Initial feature extraction    
-            features = self.extractor.extract_features(self.frame)
-            if features.size > 0:
-                self.tracker.initialize(self.frame, features)
-            print(f"Frame {self.frame_count}: {features.shape[0]} features detected.")
-            self.frame = self.visualizer.draw_features(self.frame, features)
+
+            # This function appends the current shi-tomasi features, and orb descriptors to our features dict.
+            self.get_kp_and_desc() # Do this for frame i (0 index)
+
+            self.frame = self.visualizer.draw_features(self.frame, self.features["Keypoints"][-1])
+
             self.P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
         else:
-            # Track features
-            flow_prev, flow_curr = self.tracker.track(self.frame)
-            if flow_prev.size > 0 and flow_curr.size > 0:
-                print(f"Frame {self.frame_count}: {flow_curr.shape[0]} features tracked.")
-                self.frame = self.visualizer.draw_features(self.frame, flow_curr)
-                self.frame = self.visualizer.draw_flow(self.frame, flow_prev, flow_curr)
+            # Get our features for the current and previous frame
+            kp_curr, desc_curr = self.get_kp_and_desc()
+            kp_prev, desc_prev = self.features["Keypoints"][-2], self.features["Descriptors"][-2]
+            i = self.frame_count
+            # Perform matching for bundle ajustment (later)
+            matches = self.match_features(desc_prev, desc_curr)
 
-                if flow_prev.shape[0] >= 8:
-                    # Compute Fundamental matrix to get our bounds
-                    F, inliers = cv2.findFundamentalMat(
-                        flow_prev, flow_curr, cv2.FM_RANSAC, ransacReprojThreshold=1.0, confidence=0.9
-                    )
-                    if F is not None and inliers is not None:
-                        inliers = inliers.ravel() == 1
-                        self.pts1_inliers = flow_prev[inliers]
-                        self.pts2_inliers = flow_curr[inliers]
+            if len(matches) < 8:
+                print("Not enough matches found. Skipping frame.")
+                return
 
-                        if self.pts1_inliers.shape[0] >= 8:
-                            # Compute Essential matrix and recover pose in order to get the rotation matrix
-                            E, _ = cv2.findEssentialMat(self.pts1_inliers, self.pts2_inliers, self.K)
-                            _, self.R, self.t, _ = cv2.recoverPose(E, self.pts1_inliers, self.pts2_inliers, self.K)
+            # Convert these to useful datatypes
+            pts_prev = np.float32([kp_prev[m.queryIdx].pt for m in matches])
+            pts_curr = np.float32([kp_curr[m.trainIdx].pt for m in matches])
 
-                            # Update projection matrices 
-                            # The projection matrix is found by relating the camera parameters to the estimated rotation matrix and position vector
-                            self.P1 = self.K @ np.hstack((self.R_total, self.t_total))
-                            P2 = self.K @ np.hstack((self.R, self.t))
+            # Inliers is used to find the most relevant kps
+            F, inliers = cv2.findFundamentalMat(pts_prev, pts_curr, cv2.FM_RANSAC, 1.0, 0.99)
+            
+            if F is None or inliers is None:
+                print("Failed to compute Fundamental matrix. Skipping frame.")
+                return
 
-                            # Triangulate points
-                            points_4d_hom = cv2.triangulatePoints(self.P1, P2, self.pts1_inliers.T, self.pts2_inliers.T)
-                            points_3d = cv2.convertPointsFromHomogeneous(points_4d_hom.T).reshape(-1, 3)
+            # Filtering... 
+            inliers = inliers.ravel() == 1
+            self.pts1_inliers = pts_prev[inliers]
+            self.pts2_inliers = pts_curr[inliers]
 
-                            # Update global pose
-                            self.R_total = self.R @ self.R_total
-                            self.t_total += self.R_total @ self.t
+            # Essential matrix to get R, t
+            E, _ = cv2.findEssentialMat(self.pts1_inliers, self.pts2_inliers, self.K)
+            _, self.R, self.t, _ = cv2.recoverPose(E, self.pts1_inliers, self.pts2_inliers, self.K)
 
-                            # Transform points to global frame
-                            self.points_3d_global = (self.R_total @ points_3d.T).T + self.t_total.T
-                             
-                            self.bundle_adjustment() # Perform bundle adjustment on our points before saving
+            # Projection matrix which maps 2D -> 3D
+            P1 = self.K @ np.hstack((self.R_total, self.t_total))
+            P2 = self.K @ np.hstack((self.R, self.t))
 
-                            self.global_map.append(self.points_3d_global)
-            else:
-                # If tracking fails, re-initialize features
-                print(f"Frame {self.frame_count}: Tracking failed. Re-initializing features.")
-                features = self.extractor.extract_features(self.frame)
-                if features.size > 0:
-                    self.tracker.initialize(self.frame, features)
-                self.frame = self.visualizer.draw_features(self.frame, features)
-                self.P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-        self.frame_count += 1
+            # Combine R (3x3) and t (3x1) to a 4D matrix
+            points_4d_hom = cv2.triangulatePoints(P1, P2, self.pts1_inliers.T, self.pts2_inliers.T)
+            
+            # Use the SE(3) representation to get our new 3D estimation for frame i
+            points_3d = cv2.convertPointsFromHomogeneous(points_4d_hom.T).reshape(-1, 3)
+
+            # Updating R, t
+            self.R_total = self.R @ self.R_total
+            self.t_total += self.R_total @ self.t
+
+            # Not sure...
+            self.points_3d_global = (self.R_total @ points_3d.T).T + self.t_total.T
+            
+            # self.bundle_adjustment()
+
+            # Perhaps we should update this rarely (e.g. several new features)
+            self.global_map.append(self.points_3d_global)
 
 
     def bundle_adjustment(self):
-
-        # Reproject 3D points to 2D using current estimates for the first view (previous frame)
-        rvec1, _ = cv2.Rodrigues(self.R_total)
-        tvec1 = self.t_total.flatten()
-        points_reprojected1, J1 = cv2.projectPoints(
-            objectPoints=self.points_3d_global,
-            rvec=rvec1,
-            tvec=tvec1,
-            cameraMatrix=self.K,
-            distCoeffs=None
-        )
-
-        # Reproject 3D points to 2D using current estimates for the second view (current frame)
-        rvec2, _ = cv2.Rodrigues(self.R_total @ self.R)  # Combined rotation for the second frame
-        tvec2 = (self.t_total + self.R_total @ self.t).flatten()  # Translation for the second frame
-        points_reprojected2, J2 = cv2.projectPoints(
-            objectPoints=self.points_3d_global,
-            rvec=rvec2,
-            tvec=tvec2,
-            cameraMatrix=self.K,
-            distCoeffs=None
-        )
-
-        # Compute the residual error (observed - projected) for both views
-        r1 = (self.pts1_inliers - points_reprojected1.reshape(-1, 2)).flatten()  # Residual for the first view
-        r2 = (self.pts2_inliers - points_reprojected2.reshape(-1, 2)).flatten()  # Residual for the second view
-
-        # Combine residuals into one vector
-        residuals = np.hstack([r1, r2])
-
-        # Stack Jacobians for both views
-        J_combined = np.vstack([J1, J2])
-
-        # Compute the Jacobian transpose times the residuals (J_combined.T @ residuals)
-        JT_residuals = J_combined.T @ residuals
-
-        # Compute the approximate Hessian (J_combined.T @ J_combined)
-        JTJ_combined = J_combined.T @ J_combined
-
-        # Apply Levenberg-Marquardt damping parameter
-        lam = 1e-3
-        damped_matrix = JTJ_combined + lam * np.eye(JTJ_combined.shape[0])
-
-        # Solve for parameter updates (Δx)
-        delta_x = np.linalg.solve(damped_matrix, -JT_residuals)
-
-        # Update camera parameters and 3D points using delta_x
-        # Interpret and apply delta_x to update R, t, and points_3d
-
+        # Need to redo this...
+        pass
