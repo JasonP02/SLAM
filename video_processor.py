@@ -25,10 +25,10 @@ class VideoProcessor:
         self.frame = None
         self.frame_count = 0
 
+        self.params = []
+
         self.R_total = np.eye(3)
-        self.R = None
         self.t_total = np.zeros((3, 1))
-        self.t = None
         self.K = np.array([
             [CAMERA_INTRINSICS['fx'], 0, CAMERA_INTRINSICS['cx']],
             [0, CAMERA_INTRINSICS['fy'], CAMERA_INTRINSICS['cy']],
@@ -120,7 +120,7 @@ class VideoProcessor:
 
             # Essential matrix to get R, t
             E, _ = cv2.findEssentialMat(self.pts1_inliers, self.pts2_inliers, self.K)
-            _, self.R, self.t, _ = cv2.recoverPose(E, self.pts1_inliers, self.pts2_inliers, self.K)
+            _, R, t, _ = cv2.recoverPose(E, self.pts1_inliers, self.pts2_inliers, self.K)
 
             # Projection matrix which maps 2D -> 3D
             P1 = self.K @ np.hstack((self.R_total, self.t_total))
@@ -133,18 +133,79 @@ class VideoProcessor:
             points_3d = cv2.convertPointsFromHomogeneous(points_4d_hom.T).reshape(-1, 3)
 
             # Updating R, t
-            self.R_total = self.R @ self.R_total
-            self.t_total += self.R_total @ self.t
+            self.R_total = R @ self.R_total
+            self.t_total += self.R_total @ t
+
+            # Convert R to Rodrigues vector
+            R_vec, _ = cv2.Rodrigues(R)
+
+            # Ensure params is a 1D array
+            self.params.append(np.concatenate([R_vec.flatten(), t.flatten()]))
 
             # Not sure...
             self.points_3d_global = (self.R_total @ points_3d.T).T + self.t_total.T
             
-            # self.bundle_adjustment()
+            if self.frame_count % 5 == 0:
+                '''
+                Every 10 frames we perform optimization over all R and t, giving us a more reliable map
+                '''
+                optimized_R, optimized_t = self.bundle_adjustment(len(matches), R, t, points_3d, )
+                self.R_total = optimized_R
+                self.t_total = optimized_t
 
             # Perhaps we should update this rarely (e.g. several new features)
             self.global_map.append(self.points_3d_global)
 
 
-    def bundle_adjustment(self):
-        # Need to redo this...
-        pass
+    def project_points(points_3d, R, t, K): 
+        '''
+        This gives us our point in the 2d space for error calulation
+        '''
+    
+        points_3d_hom = np.hstack((points_3d, np.ones((points_3d.shape[0], 1))))
+        points_2d_hom = K @ (R @ points_3d_hom.T + t)
+        points_2d = points_2d_hom[:2] / points_2d_hom[2]  # normalize by the third component
+        return points_2d.T  # return 2D points (u, v)
+
+    def reprojection_error_full(self, num_points, points_2d):
+        '''
+        Error calculation based on the estimated rotation matrix, and ground 
+        truth position vector (our features)
+        '''
+        num_cameras = self.num_frames
+        R_vecs = self.params[:num_cameras*3].reshape((num_cameras, 3))
+        t_vecs = self.params[num_cameras*3:num_cameras*6].reshape((num_cameras, 3, 1))
+        points_3d = self.params[num_cameras*6:].reshape((num_points, 3))
+
+        error = []
+        for i in range(num_cameras):
+            R, _ = cv2.Rodrigues(R_vecs[i])
+            t = t_vecs[i]
+            points_proj = self.project_points(points_3d, R, t, self.K)
+            error.append(points_2d[i] - points_proj)
+
+        return np.concatenate(error).ravel()
+
+    def optimize_bundle_adjustment(self, points_3d, points_2d, reprojection_error):
+        '''
+        Scipy optimizer. Might have to revise this, but its a nonlinear least squares optimizer
+        '''
+        result = least_squares(reprojection_error, self.params, args=(points_3d, points_2d, self.K))
+
+        # unpack optimized R and t
+        R_opt, t_opt = result.x[:3], result.x[3:6]
+        R_opt, _ = cv2.Rodrigues(R_opt)
+        t_opt = t_opt.reshape(3, 1)
+        
+        return R_opt, t_opt
+
+    def bundle_adjustment(self, num_features, R, t, points_3d):
+        # Bundle adjustment is the following optimization:
+        # x_3d = f(R,K,x_2d)
+        # obj: min( x_true - x_proj )^2
+        # thus, we optimize for R,K, x_proj
+        points_2d = self.project_points(R,t,self.K)
+        error = self.reprojection_error_full(num_features, points_2d)
+        R_opt, t_opt = self.optimize_bundle_adjustment(points_3d, points_2d, error)
+        
+        return R_opt, t_opt
