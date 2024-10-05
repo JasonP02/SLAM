@@ -5,6 +5,7 @@ import numpy as np
 from config import CAMERA_INTRINSICS
 from visualizers import Visualizer
 from bundle_adjuster import BundleAdjuster
+from utils import Map, MapPoint, Keyframe, filter_outliers
 
 class VideoProcessor:
     def __init__(self, filepath):
@@ -44,7 +45,7 @@ class VideoProcessor:
             cv2.destroyAllWindows()
             print(f"Total frames processed: {self.frame_count}")
         
-        return np.vstack(self.global_map) if self.global_map else np.array([])
+        return np.vstack(self.global_map) if self.global_map.size > 0 else np.array([])
 
     def match_features(self, desc1, desc2):
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
@@ -74,7 +75,7 @@ class VideoProcessor:
             kp_curr, desc_curr = self.get_kp_and_desc()
             kp_prev, desc_prev = self.features["Keypoints"][-2], self.features["Descriptors"][-2]
             matches = self.match_features(desc_prev, desc_curr)
-
+            
             if len(matches) < 8:
                 print("Not enough matches found. Skipping frame.")
                 return
@@ -82,7 +83,6 @@ class VideoProcessor:
             pts_prev = np.float32([kp_prev[m.queryIdx].pt for m in matches])
             pts_curr = np.float32([kp_curr[m.trainIdx].pt for m in matches])
 
-            # Use Essential Matrix instead of Fundamental Matrix
             E, inliers = cv2.findEssentialMat(pts_prev, pts_curr, self.K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
             
             if E is None or inliers is None:
@@ -93,14 +93,11 @@ class VideoProcessor:
             pts1_inliers = pts_prev[inliers]
             pts2_inliers = pts_curr[inliers]
 
-            # Pass in features to our bundle adjuster class
             self.bundle_adjuster.update(pts1_inliers, pts2_inliers, E)
             
             if self.frame_count % 5 == 0:
-                self.bundle_adjuster.optimize(frame_count=self.frame_count,
-                                            features=np.array(pts1_inliers),
-                                            global_map=self.global_map)
+                self.bundle_adjuster.optimize()
 
-            # Update our global points at the end
             self.points_3d_global = self.bundle_adjuster.get_global_points()
-            self.global_map = np.vstack([self.global_map, self.points_3d_global])  # Concatenate new points 
+            if self.points_3d_global is not None and self.points_3d_global.size > 0:
+                self.global_map = np.vstack([self.global_map, self.points_3d_global])
