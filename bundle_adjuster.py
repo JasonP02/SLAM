@@ -3,6 +3,7 @@
 import cv2
 import numpy as np
 from scipy.optimize import least_squares
+from utils import Map, MapPoint, Keyframe
 
 class BundleAdjuster:
     def __init__(self, K):
@@ -18,11 +19,10 @@ class BundleAdjuster:
     def initialize(self):
         self.P1 = self.K @ np.hstack((np.eye(3), np.zeros((3, 1))))
     
-    def update(self, pts1, pts2): 
+    def update(self, pts1, pts2, E): 
         '''
         for each frame we perform this update
         '''
-        E, _ = cv2.findEssentialMat(pts1, pts2, self.K)
         _, R_new, t, _ = cv2.recoverPose(E, pts1, pts2, self.K)
         print(f'R {self.R_total.shape} and t {self.t_total.shape}')
         P1 = self.K @ np.hstack((self.R_total, self.t_total))
@@ -43,7 +43,6 @@ class BundleAdjuster:
     def optimize(self, frame_count, features, global_map):
         '''
         optimize for every nth frame (tbd)
-        !! note that the update of R,t_total is probably incorrect
         '''
         self.global_map = global_map
         self.frame_count = frame_count
