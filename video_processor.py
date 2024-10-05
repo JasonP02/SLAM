@@ -82,10 +82,11 @@ class VideoProcessor:
             pts_prev = np.float32([kp_prev[m.queryIdx].pt for m in matches])
             pts_curr = np.float32([kp_curr[m.trainIdx].pt for m in matches])
 
-            F, inliers = cv2.findFundamentalMat(pts_prev, pts_curr, cv2.FM_RANSAC, 1.0, 0.99)
+            # Use Essential Matrix instead of Fundamental Matrix
+            E, inliers = cv2.findEssentialMat(pts_prev, pts_curr, self.K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
             
-            if F is None or inliers is None:
-                print("Failed to compute Fundamental matrix. Skipping frame.")
+            if E is None or inliers is None:
+                print("Failed to compute Essential matrix. Skipping frame.")
                 return
 
             inliers = inliers.ravel() == 1
@@ -93,13 +94,13 @@ class VideoProcessor:
             pts2_inliers = pts_curr[inliers]
 
             # Pass in features to our bundle adjuster class
-            self.bundle_adjuster.update(pts1_inliers, pts2_inliers)
+            self.bundle_adjuster.update(pts1_inliers, pts2_inliers, E)
             
             if self.frame_count % 5 == 0:
                 self.bundle_adjuster.optimize(frame_count=self.frame_count,
-                                              features=np.array(pts1_inliers),
-                                              global_map=self.global_map)
+                                            features=np.array(pts1_inliers),
+                                            global_map=self.global_map)
 
             # Update our global points at the end
             self.points_3d_global = self.bundle_adjuster.get_global_points()
-            self.global_map = np.vstack([self.global_map, self.points_3d_global])  # Concatenate new points
+            self.global_map = np.vstack([self.global_map, self.points_3d_global])  # Concatenate new points 
