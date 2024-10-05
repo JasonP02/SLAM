@@ -7,10 +7,10 @@ from visualizers import Visualizer
 from bundle_adjuster import BundleAdjuster
 
 class VideoProcessor:
-    def __init__(self):
+    def __init__(self, filepath):
         self.visualizer = Visualizer()
         self.features = {"Keypoints": [], "Descriptors": []}
-        self.global_map = []
+        self.global_map = np.empty((0, 3))
         self.points_3d_global = None
         self.orb = cv2.ORB_create()
         self.frame_count = 0
@@ -92,10 +92,14 @@ class VideoProcessor:
             pts1_inliers = pts_prev[inliers]
             pts2_inliers = pts_curr[inliers]
 
+            # Pass in features to our bundle adjuster class
             self.bundle_adjuster.update(pts1_inliers, pts2_inliers)
             
             if self.frame_count % 5 == 0:
-                self.bundle_adjuster.optimize()
+                self.bundle_adjuster.optimize(frame_count=self.frame_count,
+                                              features=np.array(pts1_inliers),
+                                              global_map=self.global_map)
 
+            # Update our global points at the end
             self.points_3d_global = self.bundle_adjuster.get_global_points()
-            self.global_map.append(self.points_3d_global)
+            self.global_map = np.vstack([self.global_map, self.points_3d_global])  # Concatenate new points
