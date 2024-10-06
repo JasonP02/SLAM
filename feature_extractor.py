@@ -20,4 +20,5 @@ class FeatureExtractor:
 
     def match(self, desc1, desc2):
         matches = self.matcher.match(desc1, desc2)
-        return sorted(matches, key=lambda x: x.distance)[:50]
+        matches = sorted(matches, key=lambda x: x.distance)
+        return matches[:50]
